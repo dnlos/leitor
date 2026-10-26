@@ -21,7 +21,7 @@ tipo = st.selectbox("Selecione o tipo de medição:", ["Água", "Gás"])
 arquivo_foto = st.camera_input("Tirar foto do medidor")
 # Ou se preferir galeria: arquivo_foto = st.file_uploader("Escolha a imagem", type=["jpg", "jpeg", "png"])
 
-if 'arquivo_foto is not None:
+if arquivo_foto is not None:
   imagem = Image.open(arquivo_foto)
   st.image(
       imagem, caption="Foto enviada", use_column_width=True
