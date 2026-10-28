@@ -1,94 +1,122 @@
-import pandas as pd
+import os
 from google import genai
+from google.genai.errors import APIError
+import pandas as pd
 from PIL import Image
 import streamlit as st
 
-# Configuração da página
-st.set_page_config(page_title="Leitor de Medidores", page_icon="⚡")
-
-st.title("📊 Leitor de Medidores (Água e Gás)")
-st.write(
-    "Tire ou envie a foto do medidor para extrair as leituras automaticamente."
+# 1. Configuração da página do Streamlit
+st.set_page_config(
+    page_title="Gemini AI App", page_icon="🤖", layout="wide"
 )
 
-# Inicializa o cliente Gemini (certifique-se de configurar o secret ou variável de ambiente)
-client = genai.Client()
+st.title("🤖 Assistente Gemini")
 
-# Seleção do tipo de medidor
-tipo = st.selectbox("Selecione o tipo de medição:", ["Água", "Gás"])
 
-# Wiadget para tirar foto direto da câmera do celular ou carregar arquivo
-arquivo_foto = st.camera_input("Tirar foto do medidor")
-# Ou se preferir galeria: arquivo_foto = st.file_uploader("Escolha a imagem", type=["jpg", "jpeg", "png"])
+# 2. Inicialização do Cliente do Google GenAI
+@st.cache_resource
+def get_genai_client():
+    # Tenta carregar a chave dos Secrets do Streamlit ou do ambiente
+    api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get(
+        "GOOGLE_API_KEY"
+    )
 
-if arquivo_foto is not None:
-  imagem = Image.open(arquivo_foto)
-  st.image(
-      imagem, caption="Foto enviada", use_column_width=True
-  )  # Corrigido para use_container_width em versões mais novas se necessário
-
-  if st.button("Processar Leitura"):
-    with st.spinner("Lendo os medidores com IA..."):
-      prompt = f"""
-            Esta é uma foto de medidores de {tipo} de um condomínio.
-            A imagem mostra os números dos apartamentos etiquetados e os mostradores dos relógios correspondentes.
-            
-            Analise a imagem e retorne APENAS um JSON válido contendo uma lista de registros. 
-            Cada registro deve ter:
-            - "apartamento": o número do apartamento (ex: "1001", "1002", etc.)
-            - "leitura": os números exibidos no visor mecânico do relógio correspondente.
-            
-            Exemplo:
-            [
-              {{"apartamento": "1001", "leitura": "001626"}},
-              {{"apartamento": "1002", "leitura": "000003"}}
-            ]
-            Retorne estritamente o JSON válido.
-            """
-
-      response = client.models.generate_content(
-          model="gemini-2.5-flash", contents=[imagem, prompt]
-      )
-
-      texto_resposta = response.text.strip()
-      if texto_resposta.startswith("```json"):
-        texto_resposta = (
-            texto_resposta.removeprefix("```json").removesuffix("```").strip()
+    if not api_key:
+        st.error(
+            "⚠️ Chave de API não encontrada! Configure GOOGLE_API_KEY nos Secrets do Streamlit."
         )
-      elif texto_resposta.startswith("```"):
-        texto_resposta = (
-            texto_resposta.removeprefix("```").removesuffix("```").strip()
-        )
+        st.stop()
 
-      import json
+    # Inicializa o cliente oficial google-genai
+    return genai.Client(api_key=api_key)
 
-      try:
-        dados = json.loads(texto_resposta)
-        st.success("Leitura realizada com sucesso!")
 
-        # Exibe em tabela na tela
-        df = pd.DataFrame(dados)
-        st.dataframe(df)
+try:
+    client = get_genai_client()
+except Exception as e:
+    st.error(f"Erro ao inicializar o cliente da API: {e}")
+    st.stop()
 
-        # Botão para baixar em Excel
-        @st.cache_data
-        def converter_excel(df):
-          output = io.BytesIO()
-          with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Leituras")
-          return output.getvalue()
 
-        import io
+# 3. Sidebar para seleções e upload de arquivos
+st.sidebar.header("Configurações")
 
-        excel_data = converter_excel(df)
+# Seleção do Modelo
+model_option = st.sidebar.selectbox(
+    "Escolha o modelo:",
+    ["gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+    index=0,
+)
 
-        st.download_button(
-            label="📥 Baixar Planilha Atualizada (.xlsx)",
-            data=excel_data,
-            file_name=f"leituras_{tipo.lower()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+# Upload de Imagem (opcional)
+uploaded_image = st.sidebar.file_uploader(
+    "Envie uma imagem (opcional)", type=["png", "jpg", "jpeg"]
+)
 
-      except Exception as e:
-        st.error(f"Erro ao interpretar o retorno da IA: {e}")
-        st.text(texto_resposta)
+# Upload de Planilha (opcional)
+uploaded_excel = st.sidebar.file_uploader(
+    "Envie uma planilha Excel/CSV (opcional)", type=["xlsx", "xls", "csv"]
+)
+
+
+# 4. Processamento dos arquivos anexados
+image_input = None
+if uploaded_image:
+    image_input = Image.open(uploaded_image)
+    st.sidebar.image(
+        image_input, caption="Imagem carregada", use_container_width=True
+    )
+
+excel_context = ""
+if uploaded_excel:
+    try:
+        if uploaded_excel.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_excel)
+        else:
+            df = pd.read_excel(uploaded_excel)
+
+        st.subheader("Pré-visualização da Planilha")
+        st.dataframe(df.head())
+
+        # Converte as primeiras linhas em texto para dar contexto ao modelo
+        excel_context = f"\n\nConteúdo/Amostra dos dados da planilha:\n{df.head(20).to_string()}"
+    except Exception as e:
+        st.sidebar.error(f"Erro ao ler a planilha: {e}")
+
+
+# 5. Área de entrada do usuário e geração
+prompt_input = st.text_area(
+    "Digite sua pergunta ou instrução:",
+    height=120,
+    placeholder="Ex: Analise esta imagem / Faça um resumo dos dados...",
+)
+
+if st.button("Enviar", type="primary"):
+    if not prompt_input.strip() and not image_input:
+        st.warning("Por favor, digite um texto ou envie uma imagem.")
+    else:
+        with st.spinner("Processando solicitação com o Gemini..."):
+            try:
+                # Prepara o conteúdo a ser enviado
+                contents = []
+
+                if image_input:
+                    contents.append(image_input)
+
+                # Combina o texto do usuário com os dados da planilha (se houver)
+                full_text_prompt = prompt_input + excel_context
+                contents.append(full_text_prompt)
+
+                # Chamada oficial da biblioteca google-genai
+                response = client.models.generate_content(
+                    model=model_option, contents=contents
+                )
+
+                # Exibe a resposta
+                st.markdown("### Resposta:")
+                st.write(response.text)
+
+            except APIError as api_err:
+                st.error(f"Erro na API do Google Gemini: {api_err.message}")
+            except Exception as ex:
+                st.error(f"Ocorreu um erro inesperado: {ex}")
